@@ -1,0 +1,115 @@
+name: Publish Docker image
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "./**/*.md"
+      - "LICENSE"
+      - '.gitignore'
+      - 'docker-compose.yml'
+  release:
+    types:
+      - published
+
+env:
+  IMAGE_NAME: jalvaro-13/docker-joomla
+  PLATFORMS: linux/amd64
+  CACHE_PATH: ${{ github.workspace }}/.buildx-cache
+  REGISTRIES: ghcr.io
+
+jobs:
+  metadata:
+    name: Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.tags.outputs.tags }}
+      vcs_ref: ${{ steps.vcs_ref.outputs.vcs_ref }}
+      created_on: ${{ steps.created_on.outputs.created_on }}
+    steps:
+      - name: Image Tags
+        id: tags
+        run: |
+          IMAGE_TAG="${{ github.event.release.tag_name }}"
+          [ -z "${IMAGE_TAG}" ] && IMAGE_TAG='latest'
+
+          DOCKER_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+          TAGS=
+          for registry in ${REGISTRIES}; do
+            TAGS="${TAGS},${registry}/${DOCKER_IMAGE}"
+          done
+
+          echo "Image Tag: '${IMAGE_TAG}'"
+          echo "Docker image: '${DOCKER_IMAGE}'"
+          echo "Tags: ${TAGS}"
+
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+
+      - name: Dump environment
+        if: contains(toJSON(github.event.commits.*.message), 'ci(debug)') == true
+        run: env | sort
+      - name: Dump GitHub context
+        if: contains(toJSON(github.event.commits.*.message), 'ci(debug)') == true
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: echo "${GITHUB_CONTEXT}"
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    needs: metadata
+    if: contains(toJSON(github.event.commits.*.message), 'ci(debug)') == false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2.2.1
+
+      - name: Cache Docker layers
+        id: cache-docker-layers
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.CACHE_PATH }}
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Cache hit
+        continue-on-error: true
+        env:
+          CACHE_HIT: ${{ steps.cache-docker-layers.outputs.cache-hit }}
+        run: |
+          if [[ "${CACHE_HIT}" != 'true' ]]; then
+            echo "No cache hit" >&2
+            exit 1
+          fi
+          echo "Cache contents available at: ${CACHE_PATH}"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        uses: docker/build-push-action@v3.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          build-args: |
+            VCS_REF=${{ needs.metadata.outputs.vcs_ref }}
+            BUILD_DATE=${{ needs.metadata.outputs.created_on }}
+          cache-from: |
+            type=local,src=${{ env.CACHE_PATH }}
+            ghcr.io/jalvaro-13/docker-joomla:latest
+          cache-to: type=local,dest=${{ env.CACHE_PATH }}
+          pull: true
+          push: true
+          tags: ${{ needs.metadata.outputs.tags }}
