@@ -23,6 +23,11 @@ jobs:
   metadata:
     name: Metadata
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
     outputs:
       tags: ${{ steps.tags.outputs.tags }}
       vcs_ref: ${{ steps.vcs_ref.outputs.vcs_ref }}
